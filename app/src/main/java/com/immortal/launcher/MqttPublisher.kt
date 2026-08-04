@@ -11,6 +11,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -50,6 +51,7 @@ class MqttPublisher(private val appContext: Context) {
 
   private val id = MqttConfig.deviceId(appContext)
   private val base = "immortal/$id"
+  private val audio by lazy { appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
   private val presenceListener = PresenceHub.Listener { st -> runCatching { publishPresence(st) } }
   private val nowPlayingListener = NowPlayingHub.Listener { st -> runCatching { publishMedia(st) } }
@@ -223,6 +225,7 @@ class MqttPublisher(private val appContext: Context) {
         })
     publishScreen()
     publishIp()
+    publishAudioState()
   }
 
   private fun detach() {
@@ -261,6 +264,39 @@ class MqttPublisher(private val appContext: Context) {
           "media_play_pause" -> NowPlayingHub.playPause()
           "media_next" -> NowPlayingHub.next()
           "media_previous" -> NowPlayingHub.previous()
+          "media_volume" -> {
+            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val value = payload.trim().toIntOrNull()
+            if (value != null) {
+              audio.setStreamVolume(AudioManager.STREAM_MUSIC, value.coerceIn(0, max), 0)
+              publishMediaVolume()
+              publishSpeakerMute()
+            }
+          }
+          "speaker_mute" -> {
+            val mute = payload.trim().equals("ON", ignoreCase = true)
+            audio.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                if (mute) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE,
+                0,
+            )
+            publishSpeakerMute()
+            publishMediaVolume()
+          }
+          "volume_up" -> {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
+            publishMediaVolume()
+            publishSpeakerMute()
+          }
+          "volume_down" -> {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+            publishMediaVolume()
+            publishSpeakerMute()
+          }
+          "mic_mute" -> {
+            audio.isMicrophoneMute = payload.trim().equals("ON", ignoreCase = true)
+            publishMicMute()
+          }
           "notify" -> handleNotify(payload)
           // Show the photo frame on demand — the same surface the launcher's header
           // screensaver button launches (HomeActivity.onStartScreensaver). This is the
@@ -427,6 +463,37 @@ class MqttPublisher(private val appContext: Context) {
     client?.publish("$base/ip/state", currentIp().ifBlank { "unknown" }, retain = true)
   }
 
+  private fun publishAudioState() {
+    publishMediaVolume()
+    publishSpeakerMute()
+    publishMicMute()
+  }
+
+  private fun publishMediaVolume() {
+    val c = client ?: return
+    c.publish(
+        "$base/media_volume/state",
+        audio.getStreamVolume(AudioManager.STREAM_MUSIC).toString(),
+        retain = true,
+    )
+  }
+
+  private fun publishSpeakerMute() {
+    val c = client ?: return
+    val muted =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+          audio.isStreamMute(AudioManager.STREAM_MUSIC)
+        } else {
+          audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0
+        }
+    c.publish("$base/speaker_mute/state", if (muted) "ON" else "OFF", retain = true)
+  }
+
+  private fun publishMicMute() {
+    val c = client ?: return
+    c.publish("$base/mic_mute/state", if (audio.isMicrophoneMute) "ON" else "OFF", retain = true)
+  }
+
   private fun readBatteryPresent(): Boolean {
     val i =
         appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return false
@@ -455,6 +522,19 @@ class MqttPublisher(private val appContext: Context) {
     button(c, "media_play_pause", "Play / pause", icon = "mdi:play-pause")
     button(c, "media_next", "Next track", icon = "mdi:skip-next")
     button(c, "media_previous", "Previous track", icon = "mdi:skip-previous")
+    numberEntity(
+        c,
+        "media_volume",
+        "Media volume",
+        icon = "mdi:volume-high",
+        min = 0,
+        max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+        step = 1,
+    )
+    switchEntity(c, "speaker_mute", "Speaker mute", icon = "mdi:volume-off")
+    button(c, "volume_up", "Volume up", icon = "mdi:volume-plus")
+    button(c, "volume_down", "Volume down", icon = "mdi:volume-minus")
+    switchEntity(c, "mic_mute", "Microphone mute", icon = "mdi:microphone-off")
 
     button(c, "go_home", "Home", icon = "mdi:home")
     button(c, "screensaver", "Screensaver", icon = "mdi:image-multiple")
@@ -478,6 +558,11 @@ class MqttPublisher(private val appContext: Context) {
           "button" to "media_play_pause",
           "button" to "media_next",
           "button" to "media_previous",
+          "number" to "media_volume",
+          "switch" to "speaker_mute",
+          "button" to "volume_up",
+          "button" to "volume_down",
+          "switch" to "mic_mute",
           "button" to "go_home",
           "button" to "screensaver",
           "text" to "open",
@@ -587,6 +672,28 @@ class MqttPublisher(private val appContext: Context) {
             .put("entity_category", "config")
             .put("icon", icon)
     publishConfig(c, "text", obj, cfg)
+  }
+
+  private fun numberEntity(
+      c: MqttClient,
+      obj: String,
+      name: String,
+      icon: String,
+      min: Int,
+      max: Int,
+      step: Int,
+  ) {
+    val cfg =
+        base(obj, name)
+            .put("command_topic", "$base/$obj/set")
+            .put("state_topic", "$base/$obj/state")
+            .put("availability_topic", "$base/availability")
+            .put("mode", "slider")
+            .put("min", min)
+            .put("max", max)
+            .put("step", step)
+            .put("icon", icon)
+    publishConfig(c, "number", obj, cfg)
   }
 
   /**
