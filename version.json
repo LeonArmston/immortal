@@ -1,6 +1,6 @@
 {
-  "versionCode": 58,
-  "versionName": "1.64",
+  "versionCode": 59,
+  "versionName": "1.65",
   "apkUrl": "https://github.com/starbrightlab/immortal/releases/latest/download/immortal.apk",
-  "notes": "Media cache fixes: cached videos keep their true aspect ratio (no black bars), corrupt entries self-heal, and cache warming stops cleanly when the storage limit is reached. Adds diagnostics logging."
+  "notes": "Google Photos albums now load past ~30 photos, with sharper full-resolution portraits and a blurred letterbox backdrop. The photo frame shows over a screen-lock PIN on motion wake (tap still asks for the PIN). A dropped phone-remote connection no longer crashes the launcher. Home-icon dragging is now transactional - no more scrambled layouts from a stray gesture. Adds an Android Recents button beside the QuickBar navigation, and Calls handoff now uses the stock-launcher deep link."
 }
