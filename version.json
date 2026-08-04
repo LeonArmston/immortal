@@ -1,6 +1,6 @@
 {
-  "versionCode": 59,
-  "versionName": "1.65",
+  "versionCode": 60,
+  "versionName": "1.66",
   "apkUrl": "https://github.com/starbrightlab/immortal/releases/latest/download/immortal.apk",
-  "notes": "Google Photos albums now load past ~30 photos, with sharper full-resolution portraits and a blurred letterbox backdrop. The photo frame shows over a screen-lock PIN on motion wake (tap still asks for the PIN). A dropped phone-remote connection no longer crashes the launcher. Home-icon dragging is now transactional - no more scrambled layouts from a stray gesture. Adds an Android Recents button beside the QuickBar navigation, and Calls handoff now uses the stock-launcher deep link."
+  "notes": "The photo-feed picker now works: choose the Met Museum, Art Institute of Chicago, Wikimedia landscapes, or NASA's Astronomy Picture of the Day and that is what you get. Adds Synology Photos shared albums as a screensaver source. Home Assistant gains media volume and mute controls over MQTT. Shared-album loading is more resilient: a mid-fetch failure now shows the photos already loaded instead of falling back to the built-in feed."
 }
