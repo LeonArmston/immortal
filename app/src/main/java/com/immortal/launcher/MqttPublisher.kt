@@ -488,12 +488,7 @@ class MqttPublisher(private val appContext: Context) {
 
   private fun publishSpeakerMute() {
     val c = client ?: return
-    val muted =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-          audio.isStreamMute(AudioManager.STREAM_MUSIC)
-        } else {
-          audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0
-        }
+    val muted = audio.isStreamMute(AudioManager.STREAM_MUSIC)
     c.publish("$base/speaker_mute/state", if (muted) "ON" else "OFF", retain = true)
   }
 
