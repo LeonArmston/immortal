@@ -464,8 +464,12 @@ class MqttPublisher(private val appContext: Context) {
   }
 
   private fun publishAudioState() {
-    publishMediaVolume()
-    publishSpeakerMute()
+    // Volume/speaker state is only meaningful where the stream isn't fixed;
+    // on the Portal TV those entities aren't published (see publishDiscovery).
+    if (!audio.isVolumeFixed) {
+      publishMediaVolume()
+      publishSpeakerMute()
+    }
     publishMicMute()
   }
 
@@ -522,18 +526,32 @@ class MqttPublisher(private val appContext: Context) {
     button(c, "media_play_pause", "Play / pause", icon = "mdi:play-pause")
     button(c, "media_next", "Next track", icon = "mdi:skip-next")
     button(c, "media_previous", "Previous track", icon = "mdi:skip-previous")
-    numberEntity(
-        c,
-        "media_volume",
-        "Media volume",
-        icon = "mdi:volume-high",
-        min = 0,
-        max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
-        step = 1,
-    )
-    switchEntity(c, "speaker_mute", "Speaker mute", icon = "mdi:volume-off")
-    button(c, "volume_up", "Volume up", icon = "mdi:volume-plus")
-    button(c, "volume_down", "Volume down", icon = "mdi:volume-minus")
+    // Volume and speaker mute act on STREAM_MUSIC, which only works on Portals
+    // that own their speakers (Portal, Portal+, Go, Mini). On the Portal TV
+    // audio goes out over HDMI at a fixed volume and the real volume path is an
+    // IR blaster reachable only via system key events, so these entities can't
+    // do anything there. Publish them only where the stream isn't fixed.
+    if (!audio.isVolumeFixed) {
+      numberEntity(
+          c,
+          "media_volume",
+          "Media volume",
+          icon = "mdi:volume-high",
+          min = 0,
+          max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+          step = 1,
+      )
+      switchEntity(c, "speaker_mute", "Speaker mute", icon = "mdi:volume-off")
+      button(c, "volume_up", "Volume up", icon = "mdi:volume-plus")
+      button(c, "volume_down", "Volume down", icon = "mdi:volume-minus")
+    } else {
+      // Fixed-volume device (Portal TV / HDMI): clear these in case an earlier
+      // version published them, so they don't orphan in Home Assistant.
+      publishConfig(c, "number", "media_volume", null)
+      publishConfig(c, "switch", "speaker_mute", null)
+      publishConfig(c, "button", "volume_up", null)
+      publishConfig(c, "button", "volume_down", null)
+    }
     switchEntity(c, "mic_mute", "Microphone mute", icon = "mdi:microphone-off")
 
     button(c, "go_home", "Home", icon = "mdi:home")
