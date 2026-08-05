@@ -294,8 +294,12 @@ class MqttPublisher(private val appContext: Context) {
             publishSpeakerMute()
           }
           "mic_mute" -> {
-            audio.isMicrophoneMute = payload.trim().equals("ON", ignoreCase = true)
-            publishMicMute()
+            val on = payload.trim().equals("ON", ignoreCase = true)
+            audio.isMicrophoneMute = on
+            // Echo the commanded state. isMicrophoneMute lags a set by one call,
+            // so re-reading it here desyncs the HA switch (mutes only every
+            // other press).
+            publishMicMute(on)
           }
           "notify" -> handleNotify(payload)
           // Show the photo frame on demand — the same surface the launcher's header
@@ -493,9 +497,9 @@ class MqttPublisher(private val appContext: Context) {
     c.publish("$base/speaker_mute/state", if (muted) "ON" else "OFF", retain = true)
   }
 
-  private fun publishMicMute() {
+  private fun publishMicMute(muted: Boolean = audio.isMicrophoneMute) {
     val c = client ?: return
-    c.publish("$base/mic_mute/state", if (audio.isMicrophoneMute) "ON" else "OFF", retain = true)
+    c.publish("$base/mic_mute/state", if (muted) "ON" else "OFF", retain = true)
   }
 
   private fun readBatteryPresent(): Boolean {
