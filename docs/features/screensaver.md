@@ -38,11 +38,13 @@ you don't type URLs and credentials on the Portal:
 | --- | --- |
 | Your own folder | Photos **and** videos from the device's own storage. EXIF rotation is honoured. |
 | iCloud shared album | Paste a shared-album link (supports Apple's newer CloudKit link format). |
+| Google Photos | Paste a public shared-album link. |
+| Synology Photos | Paste a public album share link. For a local HTTPS address, the NAS certificate must be trusted by the Portal. |
 | [Immich](https://immich.app/) | A self-hosted photo library. Photos **and** videos (with "Play videos" on), from an album or the whole library. |
 | Network share (SMB) | A file server on your LAN. |
 | WebDAV | Any WebDAV server. |
 | Web page | Pull images from any web page. |
-| Built-in feed | Keyless (Lorem Picsum; Unsplash-ready with a key). Requests photos at the device's actual resolution/orientation so they're sharp on every model. |
+| Built-in feed | Keyless. Pick between Lorem Picsum (stock photography), the Met Museum and Art Institute of Chicago collections, Wikimedia featured landscapes, or NASA's Astronomy Picture of the Day. Unsplash-ready with a key. |
 
 ## Presence-aware behaviour
 

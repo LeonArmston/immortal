@@ -31,7 +31,7 @@ enum class FrameMode {
  * The default source is Immortal's built-in photo feed; the user can instead point
  * the screensaver at a local folder of photos/videos — including one on a USB-C or
  * SD card plugged into the Portal (any folder reachable through the system file
- * picker) — or paste a public share link from iCloud or Google Photos. If the
+ * picker) — or paste a public share link from iCloud, Google Photos, or Synology Photos. If the
  * chosen source can't be read (e.g. the drive is unplugged, the album was unshared)
  * the screensaver falls back to the default feed, so it's never blank.
  */
@@ -213,6 +213,8 @@ object ScreensaverConfig {
       // dashboard path to deep-link to (e.g. "today-home/security"), and "" opens the
       // user's default dashboard. Only offered when an HA app is installed.
       val dismissHaDashboard: String? = null,
+      // Crop vertical (portrait) photos by ~20% (top & bottom) so they look less tall/panoramic.
+      val cropVertical: Boolean = false,
   ) {
     /** True when the idle screen-off timeout is active. */
     val idleSleepOn: Boolean
@@ -313,8 +315,12 @@ object ScreensaverConfig {
         welcomeEnabled = p.getBoolean("welcome_enabled", true),
         dismissAppComponent = p.getString("dismiss_app_component", null),
         dismissHaDashboard = p.getString("dismiss_ha_dashboard", null),
+        cropVertical = p.getBoolean("crop_vertical", false),
     )
   }
+
+  fun setCropVertical(c: Context, on: Boolean) =
+      prefs(c).edit().putBoolean("crop_vertical", on).apply()
 
   fun setSoundscape(c: Context, s: String) = prefs(c).edit().putString("soundscape", s).apply()
 

@@ -14,6 +14,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -24,6 +25,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -39,6 +41,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import org.json.JSONArray
 import org.json.JSONObject
 
 private const val SHERPA_VOICE_PARAM = "sherpa_voice_name"
@@ -59,8 +62,8 @@ private const val SHERPA_VOICE_PARAM = "sherpa_voice_name"
  *    blank even with no network or a third-party outage. See [fetchWebPhoto].
  *  - **folder** — photos and videos from a folder the user picked (internal, SD, or
  *    a USB-C drive), read through the Storage Access Framework.
- *  - **url** — a public share link to an iCloud Shared Album or a Google Photos
- *    shared album. Fetched once on start; the screensaver rotates through the
+ *  - **url** — a public share link to an iCloud Shared Album, Google Photos, or
+ *    Synology Photos album. Fetched once on start; the screensaver rotates through the
  *    returned direct image URLs and silently falls back to the default feed if the
  *    album can't be resolved.
  *
@@ -81,7 +84,23 @@ class PhotoFrameController(
   private val metaIo = Executors.newSingleThreadExecutor()
   private val ui = Handler(Looper.getMainLooper())
 
-  private lateinit var photo: ImageView
+  private class PhotoLayer(
+      val blurPhoto: ImageView,
+      val frameContainer: FrameLayout,
+      val photo: ImageView
+  )
+
+  private lateinit var layerA: PhotoLayer
+  private lateinit var layerB: PhotoLayer
+  private var activeLayerIndex = 0
+
+  private val currentLayer: PhotoLayer get() = if (this::layerA.isInitialized) (if (activeLayerIndex == 0) layerA else layerB) else PhotoLayer(ImageView(context), FrameLayout(context), ImageView(context))
+  private val incomingLayer: PhotoLayer get() = if (this::layerA.isInitialized) (if (activeLayerIndex == 0) layerB else layerA) else PhotoLayer(ImageView(context), FrameLayout(context), ImageView(context))
+
+  private val photo: ImageView get() = currentLayer.photo
+  private val blurPhoto: ImageView get() = currentLayer.blurPhoto
+  private val photoFrameContainer: FrameLayout get() = currentLayer.frameContainer
+
   private lateinit var videoView: VideoView
 
   // tvOS-style slow zoom/pan ("Ken Burns") on the photo layer. Runs over the dwell time and is
@@ -148,7 +167,7 @@ class PhotoFrameController(
   // callback can tell it's been superseded and bow out.
   private var gen = 0
 
-  // Remote playback state (iCloud / Google Photos shared albums, or an Immich server).
+  // Remote playback state (shared albums, or an Immich server).
   private var remoteMode = false
   private var remoteUrls: List<String> = emptyList()
   private var remoteIndex = -1
@@ -196,6 +215,15 @@ class PhotoFrameController(
   // Wikimedia Commons featured-landscape image list: fetched once per session, then cycled.
   private var wikimediaUrls: List<String> = emptyList()
   private var wikimediaIdx = 0
+
+  // Chosen-feed session state (issue #176). Same shape as the Wikimedia pair above: the
+  // catalog fetch runs once per session, then steady state is one image download per tick.
+  private var metIds: List<Long> = emptyList()
+  private var metIdx = 0
+  private var articUrls: List<String> = emptyList()
+  private var articIdx = 0
+  private var apodUrls: List<String> = emptyList()
+  private var apodIdx = 0
   // Bundled offline photos (assets/[FALLBACK_DIR]): shuffled once, then cycled.
   private var bundledNames: List<String> = emptyList()
   private var bundledIdx = 0
@@ -336,7 +364,7 @@ class PhotoFrameController(
           ui.post {
             if (urls.isNotEmpty()) {
               remoteUrls = if (source.shuffle) urls.shuffled() else urls
-              remoteHeaders = emptyMap()
+              remoteHeaders = album?.headers.orEmpty()
               remoteMode = true
               remoteIndex = -1
               remoteFailStreak = 0
@@ -489,9 +517,45 @@ class PhotoFrameController(
     val root = FrameLayout(context)
     root.setBackgroundColor(Color.BLACK)
 
-    photo = ImageView(context)
-    photo.scaleType = ImageView.ScaleType.CENTER_CROP
-    root.addView(photo, FrameLayout.LayoutParams(MATCH, MATCH))
+    val blurPhotoA = ImageView(context).apply {
+      scaleType = ImageView.ScaleType.CENTER_CROP
+      setColorFilter(Color.argb(45, 0, 0, 0), PorterDuff.Mode.DARKEN)
+    }
+    val frameA = FrameLayout(context).apply {
+      outlineProvider = ViewOutlineProvider.BOUNDS
+      clipToOutline = true
+      clipChildren = true
+      clipToPadding = true
+    }
+    val photoA = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+    val photoLpA = FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER).apply {
+      setMargins(-4, 0, -4, 0)
+    }
+    frameA.addView(photoA, photoLpA)
+
+    val blurPhotoB = ImageView(context).apply {
+      scaleType = ImageView.ScaleType.CENTER_CROP
+      setColorFilter(Color.argb(45, 0, 0, 0), PorterDuff.Mode.DARKEN)
+    }
+    val frameB = FrameLayout(context).apply {
+      outlineProvider = ViewOutlineProvider.BOUNDS
+      clipToOutline = true
+      clipChildren = true
+      clipToPadding = true
+    }
+    val photoB = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+    val photoLpB = FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER).apply {
+      setMargins(-4, 0, -4, 0)
+    }
+    frameB.addView(photoB, photoLpB)
+
+    layerA = PhotoLayer(blurPhotoA, frameA, photoA)
+    layerB = PhotoLayer(blurPhotoB, frameB, photoB)
+
+    root.addView(blurPhotoA, FrameLayout.LayoutParams(MATCH, MATCH))
+    root.addView(frameA, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
+    root.addView(blurPhotoB, FrameLayout.LayoutParams(MATCH, MATCH))
+    root.addView(frameB, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
 
     videoView = VideoView(context)
     videoView.visibility = View.GONE
@@ -692,9 +756,11 @@ class PhotoFrameController(
 
   private fun applyFit() {
     // Video gets the same choice via [applyVideoFit], sized per-clip once its dimensions are known.
+    val isFit = settings.fit == ScreensaverConfig.FIT_FIT
     photo.scaleType =
-        if (settings.fit == ScreensaverConfig.FIT_FIT) ImageView.ScaleType.FIT_CENTER
+        if (isFit) ImageView.ScaleType.FIT_CENTER
         else ImageView.ScaleType.CENTER_CROP
+    blurPhoto.visibility = if (isFit) View.VISIBLE else View.GONE
   }
 
   /**
@@ -1169,6 +1235,8 @@ class PhotoFrameController(
     faceRenderer.setCaption(null, null)
     photo.setImageDrawable(null)
     photo.visibility = View.GONE
+    blurPhoto.setImageDrawable(null)
+    blurPhoto.visibility = View.GONE
     videoView.visibility = View.VISIBLE
     runCatching {
           videoView.setOnPreparedListener { mp ->
@@ -1202,7 +1270,7 @@ class PhotoFrameController(
     }
   }
 
-  // --- remote album playback (iCloud / Google Photos public shares) -----------
+  // --- remote album playback (public shared albums) ---------------------------
   private val remoteTick =
       object : Runnable {
         override fun run() {
@@ -1225,6 +1293,7 @@ class PhotoFrameController(
             ui.post {
               if (remoteMode && urls.isNotEmpty()) {
                 remoteUrls = urls
+                remoteHeaders = fresh?.headers.orEmpty()
                 if (remoteIndex >= remoteUrls.size) remoteIndex = -1
                 remoteFailStreak = 0
               }
@@ -1319,6 +1388,8 @@ class PhotoFrameController(
     faceRenderer.setCaption(null, null)
     photo.setImageDrawable(null)
     photo.visibility = View.GONE
+    blurPhoto.setImageDrawable(null)
+    blurPhoto.visibility = View.GONE
     videoView.visibility = View.VISIBLE
     runCatching {
           videoView.setOnPreparedListener { mp ->
@@ -1386,6 +1457,7 @@ class PhotoFrameController(
         if (!remoteMode) return@post // raced with a source change / startWeb()
         if (urls.isNotEmpty()) {
           remoteUrls = if (settings.shuffle) urls.shuffled() else urls
+          remoteHeaders = fresh?.headers.orEmpty()
           remoteIndex = -1
           remoteFailStreak = 0
           advanceRemote(+1)
@@ -1453,6 +1525,8 @@ class PhotoFrameController(
   //   4. Bundled   — CC0/public-domain photos shipped in the APK; can't fail, so a
   //                  fresh device with no network yet — or a day every web source is
   //                  down (e.g. the Picsum outage that prompted this) — is never blank.
+  // When the user picked a specific feed (Met / Art Institute / Wikimedia / NASA), that
+  // feed is prepended to this chain by [fetchWebPhoto] — see [chosenFeedSource].
   private val webSources: List<Pair<String, () -> Bitmap?>> by lazy {
     buildList {
       if (unsplashKey.isNotBlank()) add("unsplash" to ::unsplashBitmap)
@@ -1462,9 +1536,27 @@ class PhotoFrameController(
     }
   }
 
+  // The fetcher for the user's picked feed (issue #176: the picker used to be decorative —
+  // every choice silently fell through to the default chain). Null for FEED_PICSUM, which
+  // is the default chain's own leader. Re-read per fetch so a settings change mid-session
+  // takes effect on the next photo.
+  private fun chosenFeedSource(): Pair<String, () -> Bitmap?>? =
+      when (settings.feed) {
+        ScreensaverConfig.FEED_MET -> "met" to ::metBitmap
+        ScreensaverConfig.FEED_ARTIC -> "artic" to ::articBitmap
+        ScreensaverConfig.FEED_WIKIMEDIA -> "wikimedia" to ::wikimediaBitmap
+        ScreensaverConfig.FEED_APOD -> "apod" to ::apodBitmap
+        else -> null
+      }
+
   private fun fetchWebPhoto(): Bitmap? {
+    // The chosen feed leads; the default chain stays behind it as the never-blank fallback.
+    val chosen = chosenFeedSource()
+    val chain =
+        if (chosen == null) webSources
+        else listOf(chosen) + webSources.filter { it.first != chosen.first }
     val now = System.currentTimeMillis()
-    for ((name, fetch) in webSources) {
+    for ((name, fetch) in chain) {
       if ((sourceCooldownUntil[name] ?: 0L) > now) continue // dead recently; skip until cooldown
       val bmp = runCatching { fetch() }.getOrNull()
       if (bmp != null) return bmp
@@ -1474,7 +1566,7 @@ class PhotoFrameController(
     // Everything failed or is cooling down (e.g. all remotes down *and* the bundled
     // assets are unreadable). Retry the whole chain ignoring cooldowns rather than
     // leave the frame blank.
-    for ((_, fetch) in webSources) {
+    for ((_, fetch) in chain) {
       runCatching { fetch() }.getOrNull()?.let { return it }
     }
     Log.w(TAG, "screensaver: no photo source available")
@@ -1482,62 +1574,157 @@ class PhotoFrameController(
   }
 
   private fun show(bmp: Bitmap) {
-    // The caption belongs to whichever photo is incoming; hide it now and let the per-source
-    // metadata load re-show it (web/CDN photos never re-show it — they carry no EXIF).
     faceRenderer.setCaption(null, null)
-    photo
-        .animate()
-        .alpha(0.15f)
-        .setDuration(220)
+
+    val targetLayer = incomingLayer
+    val outgoingLayer = currentLayer
+
+    val isRawPortrait = bmp.height > bmp.width
+
+    // Optionally crop vertical (portrait) photos by ~20% (10% top, 10% bottom) if setting is enabled
+    val displayBmp = if (isRawPortrait && settings.cropVertical) {
+      runCatching {
+        val cropPct = 0.20f
+        val cropPixels = (bmp.height * cropPct / 2f).toInt()
+        val croppedH = maxOf(1, bmp.height - cropPixels * 2)
+        Bitmap.createBitmap(bmp, 0, cropPixels, bmp.width, croppedH)
+      }.getOrDefault(bmp)
+    } else {
+      bmp
+    }
+
+    val isPortrait = displayBmp.height > displayBmp.width
+    val isFitMode = isPortrait || settings.fit == ScreensaverConfig.FIT_FIT
+
+    val containerLp = targetLayer.frameContainer.layoutParams as FrameLayout.LayoutParams
+    val displayMetrics = context.resources.displayMetrics
+    val screenW = displayMetrics.widthPixels
+    val screenH = displayMetrics.heightPixels
+
+    if (isFitMode) {
+      val imgRatio = displayBmp.width.toFloat() / displayBmp.height.toFloat()
+      val screenRatio = screenW.toFloat() / screenH.toFloat()
+
+      if (imgRatio < screenRatio) {
+        val calcW = Math.round(screenH * imgRatio)
+        val evenW = if (calcW % 2 != 0) calcW + 1 else calcW
+        containerLp.height = screenH
+        containerLp.width = maxOf(2, evenW)
+      } else {
+        val calcH = Math.round(screenW / imgRatio)
+        val evenH = if (calcH % 2 != 0) calcH + 1 else calcH
+        containerLp.width = screenW
+        containerLp.height = maxOf(2, evenH)
+      }
+      containerLp.gravity = Gravity.CENTER
+      targetLayer.frameContainer.layoutParams = containerLp
+
+      runCatching {
+        val blurred = createBlurredBackground(displayBmp)
+        targetLayer.blurPhoto.setImageBitmap(blurred)
+      }
+    } else {
+      containerLp.width = MATCH
+      containerLp.height = MATCH
+      containerLp.gravity = Gravity.CENTER
+      targetLayer.frameContainer.layoutParams = containerLp
+    }
+
+    targetLayer.photo.setImageBitmap(displayBmp)
+
+    // Prepare incoming layer at 0 alpha and bring to front
+    targetLayer.blurPhoto.alpha = 0f
+    targetLayer.blurPhoto.visibility = if (isFitMode) View.VISIBLE else View.GONE
+
+    targetLayer.frameContainer.alpha = 0f
+    targetLayer.frameContainer.visibility = View.VISIBLE
+
+    targetLayer.blurPhoto.bringToFront()
+    targetLayer.frameContainer.bringToFront()
+
+    // Keep UI components above photo layers
+    if (this::videoView.isInitialized) videoView.bringToFront()
+    faceRenderer.view.bringToFront()
+    dashboardPanel?.bringToFront()
+    welcomeOverlay?.bringToFront()
+
+    // Start Ken Burns motion on incoming photo
+    startKenBurns(targetLayer.photo, isPortrait)
+
+    val fadeDuration = 900L
+
+    targetLayer.frameContainer.animate()
+        .alpha(1f)
+        .setDuration(fadeDuration)
+        .setInterpolator(AccelerateDecelerateInterpolator())
+        .start()
+
+    if (isFitMode) {
+      targetLayer.blurPhoto.animate()
+          .alpha(1f)
+          .setDuration(fadeDuration)
+          .setInterpolator(AccelerateDecelerateInterpolator())
+          .start()
+    }
+
+    outgoingLayer.frameContainer.animate()
+        .alpha(0f)
+        .setDuration(fadeDuration)
+        .setInterpolator(AccelerateDecelerateInterpolator())
         .withEndAction {
-          photo.setImageBitmap(bmp)
-          startKenBurns()
-          photo.animate().alpha(1f).setDuration(420).start()
+          outgoingLayer.frameContainer.visibility = View.GONE
         }
         .start()
+
+    outgoingLayer.blurPhoto.animate()
+        .alpha(0f)
+        .setDuration(fadeDuration)
+        .setInterpolator(AccelerateDecelerateInterpolator())
+        .withEndAction {
+          outgoingLayer.blurPhoto.visibility = View.GONE
+        }
+        .start()
+
+    activeLayerIndex = if (activeLayerIndex == 0) 1 else 0
   }
 
   /**
-   * Apply a slow tvOS-style zoom/pan to the current photo over the dwell time. Cancelled and
-   * restarted on each advance. Only in fill mode: in fit/letterbox mode the user asked to see the
-   * whole frame, so cropping into it with a zoom would defeat that. A little overscan (scale
-   * [BIG]) gives pan styles room to move without ever exposing the black background.
+   * Apply a subtle tvOS-style zoom/pan to the frontal photo over the dwell time.
    */
-  private fun startKenBurns() {
+  private fun startKenBurns(targetPhoto: ImageView = currentLayer.photo, isPortrait: Boolean = false) {
     kenBurns?.cancel()
-    // Reset to identity first so a cancelled mid-animation transform never lingers on the new shot.
-    photo.scaleX = 1f
-    photo.scaleY = 1f
-    photo.translationX = 0f
-    photo.translationY = 0f
-    if (settings.fit != ScreensaverConfig.FIT_FILL) return
-    val w = (if (photo.width > 0) photo.width else context.resources.displayMetrics.widthPixels)
-    val h = (if (photo.height > 0) photo.height else context.resources.displayMetrics.heightPixels)
-    photo.pivotX = w / 2f
-    photo.pivotY = h / 2f
-    val pan = (BIG - 1f) / 2f // max translation fraction that stays within the overscan at scale BIG
+    val minScale = 1.006f
+    targetPhoto.scaleX = minScale
+    targetPhoto.scaleY = minScale
+    targetPhoto.translationX = 0f
+    targetPhoto.translationY = 0f
+
+    val zoomScale = if (isPortrait) 1.15f else 1.08f
+    val w = (if (targetPhoto.width > 0) targetPhoto.width else context.resources.displayMetrics.widthPixels)
+    val h = (if (targetPhoto.height > 0) targetPhoto.height else context.resources.displayMetrics.heightPixels)
+    targetPhoto.pivotX = w / 2f
+    targetPhoto.pivotY = h / 2f
+    val pan = (zoomScale - minScale) / 2f
     val set = AnimatorSet()
     when ((kenBurnsStyle++ % 4 + 4) % 4) {
-      0 -> // slow zoom in
-      set.playTogether(
-          ObjectAnimator.ofFloat(photo, View.SCALE_X, 1f, BIG),
-          ObjectAnimator.ofFloat(photo, View.SCALE_Y, 1f, BIG))
-      1 -> // slow zoom out
-      set.playTogether(
-          ObjectAnimator.ofFloat(photo, View.SCALE_X, BIG, 1f),
-          ObjectAnimator.ofFloat(photo, View.SCALE_Y, BIG, 1f))
-      2 -> { // pan down (hold the zoom so the edges stay covered)
-        photo.scaleX = BIG
-        photo.scaleY = BIG
-        set.playTogether(ObjectAnimator.ofFloat(photo, View.TRANSLATION_Y, pan * h, -pan * h))
+      0 -> set.playTogether(
+          ObjectAnimator.ofFloat(targetPhoto, View.SCALE_X, minScale, zoomScale),
+          ObjectAnimator.ofFloat(targetPhoto, View.SCALE_Y, minScale, zoomScale))
+      1 -> set.playTogether(
+          ObjectAnimator.ofFloat(targetPhoto, View.SCALE_X, zoomScale, minScale),
+          ObjectAnimator.ofFloat(targetPhoto, View.SCALE_Y, zoomScale, minScale))
+      2 -> {
+        targetPhoto.scaleX = zoomScale
+        targetPhoto.scaleY = zoomScale
+        set.playTogether(ObjectAnimator.ofFloat(targetPhoto, View.TRANSLATION_Y, pan * h, -pan * h))
       }
-      else -> { // pan up
-        photo.scaleX = BIG
-        photo.scaleY = BIG
-        set.playTogether(ObjectAnimator.ofFloat(photo, View.TRANSLATION_Y, -pan * h, pan * h))
+      else -> {
+        targetPhoto.scaleX = zoomScale
+        targetPhoto.scaleY = zoomScale
+        set.playTogether(ObjectAnimator.ofFloat(targetPhoto, View.TRANSLATION_Y, -pan * h, pan * h))
       }
     }
-    set.duration = intervalMs() + 1200L // outlast the dwell so the motion never visibly stalls
+    set.duration = intervalMs() + 1200L
     set.interpolator = AccelerateDecelerateInterpolator()
     set.start()
     kenBurns = set
@@ -1546,12 +1733,104 @@ class PhotoFrameController(
   private fun cancelKenBurns() {
     kenBurns?.cancel()
     kenBurns = null
-    if (this::photo.isInitialized) {
-      photo.scaleX = 1f
-      photo.scaleY = 1f
-      photo.translationX = 0f
-      photo.translationY = 0f
+    val minScale = 1.006f
+    if (this::layerA.isInitialized) {
+      layerA.photo.scaleX = minScale
+      layerA.photo.scaleY = minScale
+      layerA.photo.translationX = 0f
+      layerA.photo.translationY = 0f
     }
+    if (this::layerB.isInitialized) {
+      layerB.photo.scaleX = minScale
+      layerB.photo.scaleY = minScale
+      layerB.photo.translationX = 0f
+      layerB.photo.translationY = 0f
+    }
+  }
+
+  /**
+   * Create a smooth, high-definition blurred background version of the bitmap
+   * preserving aspect ratio without distortion or pixelation.
+   */
+  private fun createBlurredBackground(src: Bitmap): Bitmap {
+    val maxDim = maxOf(64, maxOf(src.width, src.height) / 2)
+    val (tw, th) = if (src.width >= src.height) {
+      maxDim to maxOf(1, (maxDim * src.height) / src.width)
+    } else {
+      maxOf(1, (maxDim * src.width) / src.height) to maxDim
+    }
+    val scaled = Bitmap.createScaledBitmap(src, tw, th, true)
+    return applyBoxBlur(scaled, 4)
+  }
+
+  private fun applyBoxBlur(bitmap: Bitmap, radius: Int): Bitmap {
+    val w = bitmap.width
+    val h = bitmap.height
+    if (w <= 0 || h <= 0) return bitmap
+    val pixels = IntArray(w * h)
+    bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+    val out = IntArray(w * h)
+    val r = IntArray(w * h)
+    val g = IntArray(w * h)
+    val b = IntArray(w * h)
+
+    val count = radius * 2 + 1
+
+    // Horizontal sliding window
+    for (y in 0 until h) {
+      var rsum = 0
+      var gsum = 0
+      var bsum = 0
+      val row = y * w
+      for (i in -radius..radius) {
+        val px = pixels[row + minOf(w - 1, maxOf(0, i))]
+        rsum += (px shr 16) and 0xff
+        gsum += (px shr 8) and 0xff
+        bsum += px and 0xff
+      }
+      for (x in 0 until w) {
+        r[row + x] = rsum / count
+        g[row + x] = gsum / count
+        b[row + x] = bsum / count
+        val oldPx = pixels[row + maxOf(0, x - radius)]
+        val newPx = pixels[row + minOf(w - 1, x + radius + 1)]
+        rsum += ((newPx shr 16) and 0xff) - ((oldPx shr 16) and 0xff)
+        gsum += ((newPx shr 8) and 0xff) - ((oldPx shr 8) and 0xff)
+        bsum += (newPx and 0xff) - (oldPx and 0xff)
+      }
+    }
+
+    // Vertical sliding window
+    for (x in 0 until w) {
+      var rsum = 0
+      var gsum = 0
+      var bsum = 0
+      for (i in -radius..radius) {
+        val py = minOf(h - 1, maxOf(0, i))
+        val idx = py * w + x
+        rsum += r[idx]
+        gsum += g[idx]
+        bsum += b[idx]
+      }
+      for (y in 0 until h) {
+        val idx = y * w + x
+        val cr = rsum / count
+        val cg = gsum / count
+        val cb = bsum / count
+        out[idx] = (0xff shl 24) or (cr shl 16) or (cg shl 8) or cb
+        val oldIdx = maxOf(0, y - radius) * w + x
+        val newIdx = minOf(h - 1, y + radius + 1) * w + x
+        rsum += r[newIdx] - r[oldIdx]
+        gsum += g[newIdx] - g[oldIdx]
+        bsum += b[newIdx] - b[oldIdx]
+      }
+    }
+
+    val blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    blurred.setPixels(out, 0, w, 0, 0, w, h)
+    bitmap.recycle()
+    return blurred
   }
 
   // --- default-feed sources (tried in turn by [fetchWebPhoto]) ----------------
@@ -1603,6 +1882,103 @@ class PhotoFrameController(
       if (url.isNotBlank()) urls.add(url)
     }
     urls.shuffle()
+    return urls
+  }
+
+  /**
+   * Keyless Met Museum feed: highlighted artworks with images. The search returns object
+   * ids only, so steady state is one small object-detail fetch plus the image download.
+   */
+  private fun metBitmap(): Bitmap? {
+    if (metIds.isEmpty()) metIds = fetchMetIds()
+    if (metIds.isEmpty()) return null
+    // Rights-restricted objects pass the hasImages search filter but return blank image
+    // URLs — skip past those rather than fail the whole source over one of them.
+    repeat(5) {
+      val id = metIds[metIdx % metIds.size]
+      metIdx++
+      val obj =
+          JSONObject(
+              httpGet("https://collectionapi.metmuseum.org/public/collection/v1/objects/$id"))
+      // primaryImageSmall is web-sized (~1200px) — plenty for the panel and far lighter
+      // than the full-resolution primaryImage scans, which can run to tens of MB.
+      val url = obj.optString("primaryImageSmall").ifBlank { obj.optString("primaryImage") }
+      if (url.isNotBlank()) return downloadBitmap(url)
+    }
+    return null
+  }
+
+  private fun fetchMetIds(): List<Long> {
+    // isHighlight keeps it to the curated masterpieces; q is a required parameter.
+    val json =
+        httpGet(
+            "https://collectionapi.metmuseum.org/public/collection/v1/search" +
+                "?hasImages=true&isHighlight=true&q=painting")
+    val ids = JSONObject(json).optJSONArray("objectIDs") ?: return emptyList()
+    val out = ArrayList<Long>()
+    for (i in 0 until ids.length()) {
+      val id = ids.optLong(i)
+      if (id > 0L) out.add(id)
+    }
+    out.shuffle()
+    return out
+  }
+
+  /**
+   * Keyless Art Institute of Chicago feed: public-domain artworks off their IIIF image
+   * CDN. Width 843 is the size their API guarantees for every listed image.
+   */
+  private fun articBitmap(): Bitmap? {
+    if (articUrls.isEmpty()) articUrls = fetchArticUrls()
+    if (articUrls.isEmpty()) return null
+    val url = articUrls[articIdx % articUrls.size]
+    articIdx++
+    return downloadBitmap(url)
+  }
+
+  private fun fetchArticUrls(): List<String> {
+    val json =
+        httpGet(
+            "https://api.artic.edu/api/v1/artworks/search" +
+                "?query%5Bterm%5D%5Bis_public_domain%5D=true&fields=image_id&limit=100")
+    val data = JSONObject(json).optJSONArray("data") ?: return emptyList()
+    val urls = ArrayList<String>()
+    for (i in 0 until data.length()) {
+      val imageId = data.optJSONObject(i)?.optString("image_id").orEmpty()
+      if (imageId.isNotBlank() && imageId != "null") {
+        urls.add("https://www.artic.edu/iiif/2/$imageId/full/843,/0/default.jpg")
+      }
+    }
+    urls.shuffle()
+    return urls
+  }
+
+  /**
+   * NASA Astronomy Picture of the Day feed. One batch call fetches [APOD_BATCH] random
+   * picture entries (video days are skipped), then steady state is plain CDN downloads —
+   * important because the shared DEMO_KEY is rate-limited to ~30 API calls/hour per IP,
+   * so the api.nasa.gov endpoint must be hit once per session, not once per photo.
+   */
+  private fun apodBitmap(): Bitmap? {
+    if (apodUrls.isEmpty()) apodUrls = fetchApodUrls()
+    if (apodUrls.isEmpty()) return null
+    val url = apodUrls[apodIdx % apodUrls.size]
+    apodIdx++
+    return downloadBitmap(url)
+  }
+
+  private fun fetchApodUrls(): List<String> {
+    val json =
+        httpGet("https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=$APOD_BATCH")
+    val entries = JSONArray(json)
+    val urls = ArrayList<String>()
+    for (i in 0 until entries.length()) {
+      val entry = entries.optJSONObject(i) ?: continue
+      if (entry.optString("media_type") != "image") continue
+      // `url` is the web-sized JPEG; `hdurl` originals can be enormous.
+      val url = entry.optString("url").ifBlank { entry.optString("hdurl") }
+      if (url.isNotBlank()) urls.add(url)
+    }
     return urls
   }
 
@@ -1836,6 +2212,10 @@ class PhotoFrameController(
     // How long to skip a web source after it fails, so a dead host (e.g. a Picsum
     // outage) isn't re-hammered every tick. Expires on its own so recovery self-heals.
     const val SOURCE_COOLDOWN_MS = 5 * 60_000L
+
+    // APOD entries fetched per session. Kept under DEMO_KEY's ~50-call/day budget even
+    // if the screensaver restarts a few times a day.
+    const val APOD_BATCH = 40
     // Descriptive UA — Wikimedia's API policy asks for an identifiable agent + contact.
     const val USER_AGENT = "Immortal/1.0 (+https://github.com/starbrightlab/immortal)"
   }
